@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: acao-trade-db
+    restart: unless-stopped
+    pull_policy: missing
+    environment:
+      POSTGRES_USER: acaotrade
+      POSTGRES_PASSWORD: acaotrade123
+      POSTGRES_DB: acaotrade
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    ports:
+      - "15432:5432"
+    networks:
+      - Servidores
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U acaotrade -d acaotrade" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  acao-trade-estoque:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: acao-trade-estoque
+    restart: unless-stopped
+    pull_policy: build
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8110:3000"
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://acaotrade:acaotrade123@postgres:5432/acaotrade
+    volumes:
+      - uploads:/app/public/uploads
+    networks:
+      - Servidores
+
+volumes:
+  db_data:
+    driver: local
+  uploads:
+    driver: local
+
+networks:
+  Servidores:
+    external: true

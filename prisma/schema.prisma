@@ -1,0 +1,294 @@
+// ============================================================
+// AÇÃO TRADE ESTOQUE — Schema Prisma (PostgreSQL)
+// DBA: Modelos completos para gestão de materiais de trade
+// ============================================================
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// USUÁRIOS DO SISTEMA
+// ─────────────────────────────────────────────
+model User {
+  id                  String                    @id @default(cuid())
+  name                String
+  email               String                    @unique
+  role                Role                      @default(OPERADOR)
+  avatarUrl           String?
+  passwordHash        String?
+  passwordSalt        String?
+  movements           Movement[]
+  solicitacoes        Solicitacao[]             @relation("SolicitacaoUsuario")
+  aprovacoes          Solicitacao[]             @relation("SolicitacaoAprovador")
+  categoryPermissions UserCategoryPermission[]
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+
+  @@map("users")
+}
+
+enum Role {
+  ADMINISTRADOR
+  GESTOR
+  OPERADOR
+}
+
+// ─────────────────────────────────────────────
+// CATEGORIAS DE MATERIAIS
+// ─────────────────────────────────────────────
+model Category {
+  id                  String                    @id @default(cuid())
+  name                String                    @unique
+  imageUrl            String?
+  materials           Material[]
+  userPermissions     UserCategoryPermission[]
+  createdAt           DateTime                  @default(now())
+
+  @@map("categories")
+}
+
+// ─────────────────────────────────────────────
+// LOCALIZAÇÕES DO ESTOQUE
+// ─────────────────────────────────────────────
+model Localizacao {
+  id          String     @id @default(cuid())
+  rua         String
+  predio      String
+  andar       String
+  apartamento String
+  materials   Material[]
+  createdAt   DateTime   @default(now())
+
+  @@map("localizacoes")
+}
+
+// ─────────────────────────────────────────────
+// MATERIAIS DE TRADE (ESTOQUE)
+// ─────────────────────────────────────────────
+model Material {
+  id                 String       @id @default(cuid())
+  name               String
+  sku                String?      @unique
+  categoryId         String
+  category           Category     @relation(fields: [categoryId], references: [id])
+  quantity           Int          @default(0)
+  unitCost           Float?       // Custo unitário (opcional)
+  entryDate          DateTime     @default(now())
+  status             MatStatus    @default(DISPONIVEL)
+  fornecedor         String?      // Fornecedor do material
+  nomeAcao           String?      // Nome da ação/campanha
+  periodoAcaoInicio  DateTime?    // Início do período da ação
+  periodoAcaoFim     DateTime?    // Fim do período da ação
+  dataValidade       DateTime?    // Data de validade do produto
+  photoUrl           String?      // Foto do produto para identificação visual
+  produtoAlvo        Boolean      @default(false) // Aparece em Inteligência de Ações
+  bloqueado          Boolean      @default(false) // Produto bloqueado para saídas
+  localizacaoId      String?      // Endereço do produto no estoque
+  localizacao        Localizacao? @relation(fields: [localizacaoId], references: [id])
+  movements          Movement[]
+  solicitacoes       Solicitacao[]
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  @@map("materials")
+}
+
+enum MatStatus {
+  DISPONIVEL
+  RESERVADO
+  ESGOTADO
+}
+
+// ─────────────────────────────────────────────
+// MOVIMENTAÇÕES (ENTRADAS E SAÍDAS)
+// ─────────────────────────────────────────────
+model Movement {
+  id         String    @id @default(cuid())
+  type       MoveType
+  quantity   Int
+  materialId String
+  material   Material  @relation(fields: [materialId], references: [id])
+  userId     String
+  user       User      @relation(fields: [userId], references: [id])
+  notes      String?
+  document   Document?
+  createdAt  DateTime  @default(now())
+
+  @@index([materialId, type, createdAt])
+  @@map("movements")
+}
+
+enum MoveType {
+  ENTRADA
+  SAIDA
+}
+
+// ─────────────────────────────────────────────
+// DOCUMENTOS DE SAÍDA (Comprovantes / Assinaturas)
+// ─────────────────────────────────────────────
+model Document {
+  id               String    @id @default(cuid())
+  movementId       String    @unique
+  movement         Movement  @relation(fields: [movementId], references: [id])
+  signedAt         DateTime?
+  signedBy         String?   // Nome de quem assinou
+  status           DocStatus @default(AGUARDANDO)
+  fileUrl          String?   // URL do PDF gerado
+  signedDocUrl     String?   // Foto/imagem do documento assinado (upload)
+  notes            String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@map("documents")
+}
+
+enum DocStatus {
+  AGUARDANDO
+  ASSINADO
+  CANCELADO
+}
+
+// ─────────────────────────────────────────────
+// MARCADORES DE SOLICITAÇÃO (dinâmicos, com cor)
+// ─────────────────────────────────────────────
+model Marcador {
+  id           String        @id @default(cuid())
+  name         String        @unique
+  color        String        @default("#6366f1")
+  solicitacoes Solicitacao[]
+  createdAt    DateTime      @default(now())
+
+  @@map("marcadores")
+}
+
+// ─────────────────────────────────────────────
+// SOLICITAÇÕES DE SAÍDA
+// Qualquer usuário cria; somente ADMIN aprova.
+// Quando aprovada, gera um Movement do tipo SAIDA.
+// ─────────────────────────────────────────────
+model Solicitacao {
+  id              String            @id @default(cuid())
+  materialId      String
+  material        Material          @relation(fields: [materialId], references: [id])
+  solicitanteId   String
+  solicitante     User              @relation("SolicitacaoUsuario", fields: [solicitanteId], references: [id])
+  quantity        Int
+  justificativa   String
+  status          SolicitacaoStatus @default(PENDENTE)
+  aprovadorId     String?
+  aprovador       User?             @relation("SolicitacaoAprovador", fields: [aprovadorId], references: [id])
+  aprovadoEm      DateTime?
+  motivoRejeicao  String?   // Preenchido ao rejeitar — visível ao solicitante
+  movementId      String?
+  codCli          String?   // Código do cliente (pré-preenchido via Inteligência de Ações)
+  clienteNome     String?   // Nome do cliente
+  signedDocUrl    String?
+  notes           String?
+  marcadorId      String?
+  marcador        Marcador?         @relation(fields: [marcadorId], references: [id])
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@map("solicitacoes")
+}
+
+// ─────────────────────────────────────────────
+// PERMISSÕES DE VISUALIZAÇÃO POR CATEGORIA
+// Se um usuário tiver entradas aqui, ele só verá
+// as categorias listadas. Se não tiver, vê tudo.
+// ─────────────────────────────────────────────
+model UserCategoryPermission {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, categoryId])
+  @@map("user_category_permissions")
+}
+
+enum SolicitacaoStatus {
+  PENDENTE
+  APROVADA
+  REJEITADA
+}
+
+// ─────────────────────────────────────────────
+// METAS POR FORNECEDOR (faixas de sell-out)
+// Sell-out vem do Oracle (PM_FATURAMENTO). Aqui só ficam as
+// faixas configuráveis: a partir de `valorMinimo` o cliente
+// daquele fornecedor "ganha" a `recompensa` (ex.: stand/brinde).
+// `fornecedorId` referencia PM_FORNECEDOR.ID no Oracle (fornec. principal).
+// ─────────────────────────────────────────────
+model MetaFornecedor {
+  id             String      @id @default(cuid())
+  fornecedorId   Int // PM_FORNECEDOR.ID (Oracle)
+  fornecedorNome String
+  nome           String // Nome da faixa/recompensa (ex.: "Stand")
+  valorMinimo    Float // O X em R$ de sell-out para liberar
+  recompensa     String // Descrição do que é liberado
+  ativo          Boolean     @default(true)
+  liberacoes     Liberacao[]
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([fornecedorId])
+  @@map("metas_fornecedor")
+}
+
+// ─────────────────────────────────────────────
+// LIBERAÇÕES (geradas quando cliente bate a meta)
+// Uma por (meta × cliente). Pode receber upload de comprovante.
+// ─────────────────────────────────────────────
+model Liberacao {
+  id             String         @id @default(cuid())
+  metaId         String
+  meta           MetaFornecedor @relation(fields: [metaId], references: [id], onDelete: Cascade)
+  fornecedorId   Int
+  fornecedorNome String
+  codCli         String // PM_FATURAMENTO.COD_CLI
+  nomeCliente    String
+  cnpj           String?
+  valorAtingido  Float // sell-out acumulado no momento da liberação
+  status         LiberacaoStatus @default(LIBERADO)
+  comprovanteUrl String? // upload do comprovante de entrega
+  liberadoEm     DateTime        @default(now())
+  entregueEm     DateTime?
+  notes          String?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@unique([metaId, codCli])
+  @@index([fornecedorId])
+  @@map("liberacoes")
+}
+
+enum LiberacaoStatus {
+  LIBERADO
+  MONTADO
+  ENTREGUE
+  CANCELADO
+}
+
+// ─────────────────────────────────────────────
+// CACHE DE RESULTADOS ORACLE
+// Persiste respostas de queries lentas do Oracle no PostgreSQL.
+// Sobrevive a reinicializações do servidor e é compartilhado
+// entre todos os workers do Node.js.
+// ─────────────────────────────────────────────
+model OracleCache {
+  key       String   @id
+  payload   Json
+  expiresAt DateTime
+  updatedAt DateTime @updatedAt
+
+  @@map("oracle_cache")
+}
